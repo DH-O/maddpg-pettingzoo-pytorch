@@ -1,6 +1,8 @@
 import argparse
 import os
 
+import imageio
+
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -21,8 +23,11 @@ if __name__ == '__main__':
     model_dir = os.path.join('./results', args.env_name, args.folder)
     assert os.path.exists(model_dir)
     gif_dir = os.path.join(model_dir, 'gif')
+    video_dir = os.path.join(model_dir, 'video')    # 비디오 저장용 0723
     if not os.path.exists(gif_dir):
         os.makedirs(gif_dir)
+    if not os.path.exists(video_dir): # 비디오 저장용 0723
+        os.makedirs(video_dir)
     gif_num = len([file for file in os.listdir(gif_dir)])  # current number of gif
 
     env, dim_info = get_env(args.env_name, args.episode_length)
@@ -35,10 +40,13 @@ if __name__ == '__main__':
         states = env.reset()
         agent_reward = {agent: 0 for agent in env.agents}  # agent reward of the current episode
         frame_list = []  # used to save gif
+        video_frames = []  # 비디오 저장용 0723
         while env.agents:  # interact with the env for an episode
-            actions = maddpg.select_action(states)
+            actions = maddpg.select_action(states, test=True)
             next_states, rewards, dones, infos = env.step(actions)
-            frame_list.append(Image.fromarray(env.render(mode='rgb_array')))
+            frame = env.render(mode='rgb_array') # 비디오 저장용 0723
+            frame_list.append(Image.fromarray(frame)) # 비디오 저장용 0723
+            video_frames.append(frame) # 비디오 저장용 0723
             states = next_states
 
             for agent_id, reward in rewards.items():  # update reward
@@ -54,6 +62,9 @@ if __name__ == '__main__':
         # save gif
         frame_list[0].save(os.path.join(gif_dir, f'out{gif_num + episode + 1}.gif'),
                            save_all=True, append_images=frame_list[1:], duration=1, loop=0)
+        # save video
+        video_path = os.path.join(video_dir, f'out{gif_num + episode + 1}.mp4') # 비디오 저장용 0723
+        imageio.mimsave(video_path, video_frames) # 비디오 저장용 0723
 
     # training finishes, plot reward
     fig, ax = plt.subplots()

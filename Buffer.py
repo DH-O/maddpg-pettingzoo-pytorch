@@ -4,7 +4,7 @@ import torch
 
 class Buffer:
     """replay buffer for each agent"""
-
+    
     def __init__(self, capacity, obs_dim, act_dim, device):
         self.capacity = capacity
 
@@ -13,19 +13,24 @@ class Buffer:
         self.reward = np.zeros(capacity)
         self.next_obs = np.zeros((capacity, obs_dim))
         self.done = np.zeros(capacity, dtype=bool)
+        """ tar_act 추가요 0723 """
+        self.tar_act = np.zeros((capacity, act_dim))
 
         self._index = 0
         self._size = 0
 
         self.device = device
 
-    def add(self, obs, action, reward, next_obs, done):
+    """ tar_act 추가요 0723 """
+    def add(self, obs, action, reward, next_obs, done, tar_act):
         """ add an experience to the memory """
         self.obs[self._index] = obs
         self.action[self._index] = action
         self.reward[self._index] = reward
         self.next_obs[self._index] = next_obs
         self.done[self._index] = done
+        """ tar_act 추가요  0723 """
+        self.tar_act[self._index] = tar_act
 
         self._index = (self._index + 1) % self.capacity
         if self._size < self.capacity:
@@ -38,6 +43,8 @@ class Buffer:
         reward = self.reward[indices]
         next_obs = self.next_obs[indices]
         done = self.done[indices]
+        """ tar_act 추가요 0723 """
+        tar_act = self.tar_act[indices]
 
         # NOTE that `obs`, `action`, `next_obs` will be passed to network(nn.Module),
         # so the first dimension should be `batch_size`
@@ -47,8 +54,11 @@ class Buffer:
         # reward = (reward - reward.mean()) / (reward.std() + 1e-7)
         next_obs = torch.from_numpy(next_obs).float().to(self.device)  # Size([batch_size, state_dim])
         done = torch.from_numpy(done).float().to(self.device)  # just a tensor with length: batch_size
-
-        return obs, action, reward, next_obs, done
+        """ tar_act 추가요 0723 """
+        tar_act = torch.from_numpy(tar_act).float().to(self.device)
+        
+        """ tar_act 추가요 0723 """
+        return obs, action, reward, next_obs, done, tar_act
 
     def __len__(self):
         return self._size

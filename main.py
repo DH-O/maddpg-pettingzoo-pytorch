@@ -34,10 +34,10 @@ if __name__ == '__main__':
                         choices=['simple_adversary_v2', 'simple_spread_v2', 'simple_tag_v2'])
     parser.add_argument('--episode_num', type=int, default=30000,
                         help='total episode num during training procedure')
-    parser.add_argument('--episode_length', type=int, default=25, help='steps per episode')
+    parser.add_argument('--episode_length', type=int, default=75, help='steps per episode') # 25 -> 75까지 뻥튀기됨 0723
     parser.add_argument('--learn_interval', type=int, default=100,
                         help='steps interval between learning time')
-    parser.add_argument('--random_steps', type=int, default=5e4,
+    parser.add_argument('--random_steps', type=int, default=5e4,    # 5e4인데 잠깐만 앞당김
                         help='random steps before the agent start to learn')
     parser.add_argument('--tau', type=float, default=0.02, help='soft update parameter')
     parser.add_argument('--gamma', type=float, default=0.95, help='discount factor')
@@ -63,8 +63,12 @@ if __name__ == '__main__':
     agent_num = env.num_agents
     # reward of each episode of each agent
     episode_rewards = {agent_id: np.zeros(args.episode_num) for agent_id in env.agents}
+    
+    train_start_flag = True
+    
     for episode in range(args.episode_num):
         obs = env.reset()
+        # obs['agent_idx'] = 자기 속도 + 자기 위치 + 랜드마크들까지의 상대 변위 + 본인 빼고 아군들 까지의 상대 변위 + 본인 빼고 나머지한테 받은 통신 : 에이전트 7개, 랜드마크 7개의 경우 14개임
         agent_reward = {agent_id: 0 for agent_id in env.agents}  # agent reward of the current episode
         while env.agents:  # interact with the env for an episode
             step += 1
@@ -72,17 +76,78 @@ if __name__ == '__main__':
                 action = {agent_id: env.action_space(agent_id).sample() for agent_id in env.agents}
             else:
                 action = maddpg.select_action(obs)
+            
+            """ KL위한 작업들 0723 """
+            use_KL = True
+            
+            if use_KL:
+                """ guidance action을 구하기 위해 obs, next_obs를 이용하여 discrite action을 구해보자 """
+                closest_discrete_action_ls = []
+                use_dynamic_closest = False
+                target_idx_pre = 0
+                
+                for agent_id, agent_obs in obs.items():
+                    landmarks_rel_pos_ls_x = []
+                    landmarks_rel_pos_ls_y = []
+                    
+                    for i in range(7):
+                        landmarks_rel_pos_ls_x.append(abs(agent_obs[4 + 2*i : 4 + 2*(i+1)][0]))
+                        landmarks_rel_pos_ls_y.append(abs(agent_obs[4 + 2*i : 4 + 2*(i+1)][1]))
+                    
+                    if use_dynamic_closest:    
+                        target_idx_x = min(landmarks_rel_pos_ls_x)
+                        target_idx_y = min(landmarks_rel_pos_ls_y)
+                    else:
+                        target_idx_x = landmarks_rel_pos_ls_x[target_idx_pre]
+                        target_idx_y = landmarks_rel_pos_ls_y[target_idx_pre]
+                    
+                    if target_idx_x < target_idx_y:
+                        target_idx = landmarks_rel_pos_ls_x.index(target_idx_x)
+                        closest_landmark_discrete = agent_obs[4 + 2*target_idx : 4 + 2*(target_idx+1)]
+                        
+                        if abs(closest_landmark_discrete[0]) <= 0.001:
+                            closest_discrete_action_ls.append(0)
+                        elif closest_landmark_discrete[0] > 0:
+                            closest_discrete_action_ls.append(1)
+                        elif closest_landmark_discrete[0] < 0:
+                            closest_discrete_action_ls.append(2)
+                        else:
+                            AssertionError("Error. Check the code case line 102 in main.py")
+                    else:
+                        target_idx = landmarks_rel_pos_ls_y.index(target_idx_y)
+                        closest_landmark_discrete = agent_obs[4 + 2*target_idx : 4 + 2*(target_idx+1)]
+                        
+                        if abs(closest_landmark_discrete[1]) <= 0.001:
+                            closest_discrete_action_ls.append(0)
+                        elif closest_landmark_discrete[1] > 0:
+                            closest_discrete_action_ls.append(3)
+                        elif closest_landmark_discrete[1] < 0:
+                            closest_discrete_action_ls.append(4)
+                        else:
+                            AssertionError("Error. Check the code case line 113 in main.py")
+                    
+                    target_idx_pre += 1
+            else:
+                closest_discrete_action_ls = [0 for _ in range(7)]
+            
+            target_action = {}
+            for i, agent_id in enumerate(env.agents):
+                target_action[agent_id] = closest_discrete_action_ls[i]
 
-            next_obs, reward, done, info = env.step(action)
+            next_obs, reward, done, info = env.step(action) # discrete action이다 참고로
+                
             # env.render()
-            maddpg.add(obs, action, reward, next_obs, done)
+            maddpg.add(obs, action, reward, next_obs, done, target_action)  # KL 0723
 
             for agent_id, r in reward.items():  # update reward
                 agent_reward[agent_id] += r
 
             if step >= args.random_steps and step % args.learn_interval == 0:  # learn every few steps
-                maddpg.learn(args.batch_size, args.gamma)
+                if train_start_flag:
+                    print("==================================== start training ==========================")
+                maddpg.learn(args.batch_size, args.gamma, use_KL, step) # KL 0723
                 maddpg.update_target(args.tau)
+                train_start_flag = False
 
             obs = next_obs
 

@@ -10,16 +10,17 @@ from torch.optim import Adam
 class Agent:
     """Agent that can interact with environment from pettingzoo"""
 
-    def __init__(self, obs_dim, act_dim, global_obs_dim, actor_lr, critic_lr):
-        self.actor = MLPNetwork(obs_dim, act_dim)
+    def __init__(self, obs_dim, act_dim, global_obs_dim, actor_lr, critic_lr, device):  # device 추가함 07/23
+        self.actor = MLPNetwork(obs_dim, act_dim).to(device)    # device 추가함 07/21
 
         # critic input all the observations and actions
         # if there are 3 agents for example, the input for critic is (obs1, obs2, obs3, act1, act2, act3)
-        self.critic = MLPNetwork(global_obs_dim, 1)
+        self.critic = MLPNetwork(global_obs_dim, 1).to(device)  # device 추가함 07/21
         self.actor_optimizer = Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = Adam(self.critic.parameters(), lr=critic_lr)
-        self.target_actor = deepcopy(self.actor)
-        self.target_critic = deepcopy(self.critic)
+        self.target_actor = deepcopy(self.actor).to(device) # device 추가함 07/21
+        self.target_critic = deepcopy(self.critic).to(device)   # device 추가함 07/21
+        self.device = device    # device 추가함 07/21
 
     @staticmethod
     def gumbel_softmax(logits, tau=1.0, eps=1e-20):
@@ -37,7 +38,8 @@ class Agent:
 
         logits = self.actor(obs)  # torch.Size([batch_size, action_size])
         # action = self.gumbel_softmax(logits)
-        action = F.gumbel_softmax(logits, hard=True)
+        logits_noisy = logits + torch.randn_like(logits) * 2    # 랜덤액션 생성 추가함 07/23
+        action = F.gumbel_softmax(logits_noisy, hard=True)
         if model_out:
             return action, logits
         return action

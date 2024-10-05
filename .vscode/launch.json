@@ -13,6 +13,12 @@
             "justMyCode": false,
             "args": [
                 "simple_spread_v2",
+                // "2024-08-08/18-41-23"
+                "--episode_num", "5000",
+                "--random_steps", "0",
+                "--buffer_capacity", "100000",
+                "--batch_size", "1024",
+                "--map_size", "1.0"
                 // "15"
             ]
         }

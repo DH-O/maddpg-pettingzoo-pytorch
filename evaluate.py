@@ -16,8 +16,18 @@ if __name__ == '__main__':
                         choices=['simple_adversary_v2', 'simple_spread_v2', 'simple_tag_v2'])
     parser.add_argument('folder', type=str, help='name of the folder where model is saved')
     parser.add_argument('--episode-num', type=int, default=10, help='total episode num during evaluation')
-    parser.add_argument('--episode-length', type=int, default=50, help='steps per episode')
-
+    parser.add_argument('--update_GUID', type=int, default=200, help='update GUID every n steps')
+    parser.add_argument('--update_MA', type=int, default=10, help='update MADDPG every n steps')
+    
+    """ 하단 아규먼트들은 학습 코드와 비교해야함 """
+    parser.add_argument('--use_GUID', type=int, default=0, help='use guidance action')
+    parser.add_argument('--use_KL', type=int, default=0, help='use KL divergence for action selection')
+    parser.add_argument('--T_horizon', type=int, default=2048, help='time horizon for guidance action')
+    parser.add_argument('--use_PPO', type=int, default=1, help='use PPO for action selection')
+    parser.add_argument('--use_PPO_only', type=int, default=1, help='use PPO only for action selection')
+    parser.add_argument('--episode-length', type=int, default=25, help='steps per episode')
+    parser.add_argument('--map_size', type=float, default=1.0, help='size of the map')
+    parser.add_argument('--num_agents', type=int, default=1, help='number of agents in the env')
     args = parser.parse_args()
 
     model_dir = os.path.join('./results', args.env_name, args.folder)
@@ -30,8 +40,8 @@ if __name__ == '__main__':
         os.makedirs(video_dir)
     gif_num = len([file for file in os.listdir(gif_dir)])  # current number of gif
 
-    env, dim_info = get_env(args.env_name, args.episode_length)
-    maddpg = MADDPG.load(dim_info, os.path.join(model_dir, 'model.pt'))
+    env, dim_info = get_env(args.env_name, args.episode_length, args.num_agents, args.map_size)
+    maddpg = MADDPG.load(dim_info, os.path.join(model_dir, 'model.pt'), args)
 
     agent_num = env.num_agents
     # reward of each episode of each agent
@@ -42,7 +52,11 @@ if __name__ == '__main__':
         frame_list = []  # used to save gif
         video_frames = []  # 비디오 저장용 0723
         while env.agents:  # interact with the env for an episode
-            actions = maddpg.select_action(states, test=True)
+            if args.use_GUID:
+                actions, prob = maddpg.select_action(states, ppo=False, deterministic=True)
+            else:
+                if args.use_PPO:
+                    actions, prob = maddpg.select_action(states, ppo=True, deterministic=True)
             next_states, rewards, dones, infos = env.step(actions)
             frame = env.render(mode='rgb_array') # 비디오 저장용 0723
             frame_list.append(Image.fromarray(frame)) # 비디오 저장용 0723

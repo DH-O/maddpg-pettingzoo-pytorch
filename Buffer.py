@@ -7,14 +7,18 @@ class Buffer:
     
     def __init__(self, capacity, obs_dim, act_dim, device):
         self.capacity = capacity
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
 
-        self.obs = np.zeros((capacity, obs_dim))
-        self.action = np.zeros((capacity, act_dim))
-        self.reward = np.zeros(capacity)
-        self.next_obs = np.zeros((capacity, obs_dim))
+        self.obs = np.zeros((capacity, obs_dim), dtype=np.float32)
+        self.action = np.zeros((capacity, act_dim), dtype=np.int64)
+        self.reward = np.zeros(capacity, dtype=np.float32)
+        self.next_obs = np.zeros((capacity, obs_dim), dtype=np.float32)
         self.done = np.zeros(capacity, dtype=bool)
         """ tar_act 추가요 0723 """
-        self.tar_act = np.zeros((capacity, act_dim))
+        self.tar_ent = np.zeros((capacity))
+        """ prob_act 추가요 0802 """
+        self.act_log_prob = np.zeros((capacity))
 
         self._index = 0
         self._size = 0
@@ -22,7 +26,7 @@ class Buffer:
         self.device = device
 
     """ tar_act 추가요 0723 """
-    def add(self, obs, action, reward, next_obs, done, tar_act):
+    def add(self, obs, action, reward, next_obs, done, tar_ent, prob_act):
         """ add an experience to the memory """
         self.obs[self._index] = obs
         self.action[self._index] = action
@@ -30,7 +34,9 @@ class Buffer:
         self.next_obs[self._index] = next_obs
         self.done[self._index] = done
         """ tar_act 추가요  0723 """
-        self.tar_act[self._index] = tar_act
+        self.tar_ent[self._index] = tar_ent
+        """ prob_act 추가요 0802 """
+        self.act_log_prob[self._index] = prob_act
 
         self._index = (self._index + 1) % self.capacity
         if self._size < self.capacity:
@@ -44,21 +50,40 @@ class Buffer:
         next_obs = self.next_obs[indices]
         done = self.done[indices]
         """ tar_act 추가요 0723 """
-        tar_act = self.tar_act[indices]
-
+        tar_ent = self.tar_ent[indices]
+        """ prob_act 추가요 0804 """
+        prob_act = self.act_log_prob[indices]
+        
         # NOTE that `obs`, `action`, `next_obs` will be passed to network(nn.Module),
         # so the first dimension should be `batch_size`
         obs = torch.from_numpy(obs).float().to(self.device)  # torch.Size([batch_size, state_dim])
-        action = torch.from_numpy(action).float().to(self.device)  # torch.Size([batch_size, action_dim])
+        action = torch.from_numpy(action).int().to(self.device)  # torch.Size([batch_size, action_dim]) # 정수형만 나오도록 수정함 0804
         reward = torch.from_numpy(reward).float().to(self.device)  # just a tensor with length: batch_size
         # reward = (reward - reward.mean()) / (reward.std() + 1e-7)
         next_obs = torch.from_numpy(next_obs).float().to(self.device)  # Size([batch_size, state_dim])
         done = torch.from_numpy(done).float().to(self.device)  # just a tensor with length: batch_size
         """ tar_act 추가요 0723 """
-        tar_act = torch.from_numpy(tar_act).float().to(self.device)
+        tar_ent = torch.from_numpy(tar_ent).int().to(self.device)
+        """ prob_act 추가요 0804 """
+        prob_act = torch.from_numpy(prob_act).float().to(self.device)
         
         """ tar_act 추가요 0723 """
-        return obs, action, reward, next_obs, done, tar_act
+        """  prob_act 추가요 0804 """
+        return obs, action, reward, next_obs, done, tar_ent, prob_act
 
     def __len__(self):
         return self._size
+
+    def clear(self):
+        self.obs.fill(0)
+        self.action.fill(0)
+        self.reward.fill(0)
+        self.next_obs.fill(0)
+        self.done.fill(0)
+        """ tar_act 추가요 0723 """
+        self.tar_ent.fill(0)
+        """ prob_act 추가요 0802 """
+        self.act_log_prob.fill(0)
+
+        self._index = 0
+        self._size = 0

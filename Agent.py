@@ -6,78 +6,51 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.optim import Adam
 """ 액션 노이지한 샘플링을 위함 08/04"""
-from torch.distributions import Categorical
+from torch.distributions import Normal
 
 class Agent:
     """Agent that can interact with environment from pettingzoo"""
 
-    def __init__(self, obs_dim, act_dim, global_obs_dim, actor_lr, critic_lr, device, args):  # device 추가함 07/23
+    def __init__(self, obs_dim, act_dim, action_space, global_obs_dim, actor_lr, critic_lr, device, args):
         
         self.args = args
 
-        self.actor = MLPNetwork(obs_dim, act_dim).to(device)    # device 추가함 07/21
+        self.actor = Actor(obs_dim, act_dim, action_space, self.args.log_std_max, self.args.log_std_min, self.args.hidden_size, ).to(device)
         self.actor_optimizer = Adam(self.actor.parameters(), lr=actor_lr)
         
         # critic input all the observations and actions
         # if there are 3 agents for example, the input for critic is (obs1, obs2, obs3, act1, act2, act3)
-        self.critic = MLPNetwork(global_obs_dim, 1).to(device)  # device 추가함 07/21
+        self.critic = ValueNetwork(global_obs_dim, self.args.hidden_size).to(device)  
         self.critic_optimizer = Adam(self.critic.parameters(), lr=critic_lr)
         
-        self.PPO_critic = MLPNetwork(obs_dim, 1).to(device)
-        self.PPO_critic_optimizer = Adam(self.PPO_critic.parameters(), lr=critic_lr)
+        # self.target_actor = deepcopy(self.actor).to(device) 
+        self.target_critic = deepcopy(self.critic).to(device)   
         
-        if not self.args.use_PPO_only:
-            self.target_actor = deepcopy(self.actor).to(device) # device 추가함 07/21
-            self.target_critic = deepcopy(self.critic).to(device)   # device 추가함 07/21
-        
-        self.device = device    # device 추가함 07/21
+        self.device = device    
 
-    @staticmethod
-    def gumbel_softmax(logits, tau=1.0, eps=1e-20):
-        # NOTE that there is a function like this implemented in PyTorch(torch.nn.functional.gumbel_softmax),
-        # but as mention in the doc, it may be removed in the future, so i implement it myself
-        epsilon = torch.rand_like(logits)
-        logits += -torch.log(-torch.log(epsilon + eps) + eps)
-        return F.softmax(logits / tau, dim=-1)
-
-    def action(self, obs, ppo=False, agent_idx=None):
-        # this method is called in the following two cases:
-        # a) interact with the environment
-        # b) calculate action when update actor, where input(obs) is sampled from replay buffer with size:
+    def action(self, obs, agent_idx=None):
         # torch.Size([batch_size, state_dim])
-
-        if ppo:
-            obs[:, 4 : 4 + 2*agent_idx] = 0
-            obs[:, 4 + 2*(agent_idx+1):] = 0
         
-        logits = self.actor(obs)  # torch.Size([batch_size, action_size])
+        mean, log_std = self.actor(obs)  # torch.Size([batch_size, action_size])
+        std = log_std.exp()
         
-        if ppo:
-            prob_of_actions_or_logits = F.softmax(logits, dim=-1)
-            m = Categorical(prob_of_actions_or_logits)
-            sample_action = m.sample()
-            sample_action = F.one_hot(sample_action, num_classes=logits.shape[1]).int()
-        else:
-            sample_action = F.gumbel_softmax(logits, hard=True)
-            prob_of_actions_or_logits = logits
+        normal = Normal(mean, std)
+        x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1)) , r stands for reparameterization trick in 'r'sample
+        y_t = torch.tanh(x_t)   # action squashed between -1 and 1
+        action = y_t * self.actor.action_scale + self.actor.action_bias
+        log_prob = normal.log_prob(x_t) # log pdf of normal distribution 구하기. 약간 log(pi(a|s)) for all a 라고 봐도 될 듯
+        # Enforcing Action Bound
+        log_prob -= torch.log(self.actor.action_scale * (1 - y_t.pow(2)) + 1e-6)    
+        # 1e-6은 epsilon 보정. 1 - y_t^2이 0이 되는 것을 방지하기 위함. 1 - (y_t)^2은 tanh의 미분값입니다. 이렇게 하는 이유는 비선형 변환에 대한 변화 변수 공식이란 것을 적용하기 위함
+        log_prob = log_prob.sum(1, keepdim=True) # sum of log (prob) == log (product of prob) , 즉 해당 n차원 action이 동시에 일어날 확률
+        mean = torch.tanh(mean) * self.actor.action_scale + self.actor.action_bias
         
-        return sample_action, prob_of_actions_or_logits
+        return action, log_prob, mean
 
-    def target_action(self, obs):
-        # when calculate target critic value in MADDPG,
-        # we use target actor to get next action given next states,
-        # which is sampled from replay buffer with size torch.Size([batch_size, state_dim])
-
-        logits = self.target_actor(obs)  # torch.Size([batch_size, action_size])
-        action = F.gumbel_softmax(logits, hard=True)
-        return action.squeeze(0).detach()
-
-    def critic_value(self, state_list: List[Tensor], act_list: List[Tensor]):
+    def critic_values(self, state_list: List[Tensor], act_list: List[Tensor]):
         x = torch.cat(state_list + act_list, 1)
         return self.critic(x).squeeze(1)  # tensor with a given length
-    
-    def PPO_critic_value(self, obs):
-        return self.PPO_critic(obs).squeeze(1)
+        # 1인덱스에 해당하는 차원(두번째 차원)이 1인 경우, 해당 차원을 없애줌
 
     def target_critic_value(self, state_list: List[Tensor], act_list: List[Tensor]):
         x = torch.cat(state_list + act_list, 1)
@@ -95,26 +68,56 @@ class Agent:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.args.max_grad_norm)
         self.critic_optimizer.step()
 
-
-class MLPNetwork(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim=64, non_linear=nn.ReLU()):
-        super(MLPNetwork, self).__init__()
-
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            non_linear,
-            nn.Linear(hidden_dim, hidden_dim),
-            non_linear,
-            nn.Linear(hidden_dim, out_dim),
-        ).apply(self.init)
-
-    @staticmethod
-    def init(m):
-        """init parameter of the module"""
-        gain = nn.init.calculate_gain('relu')
+def weights_init_(m):
         if isinstance(m, nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=gain)
-            m.bias.data.fill_(0.01)
+            torch.nn.init.xavier_uniform_(m.weight, gain=1)
+            torch.nn.init.constant_(m.bias, 0)
+
+class Actor(nn.Module):
+    def __init__(self, in_dim, out_dim, action_space, log_std_max, log_std_min, hidden_dim=64):
+        super(Actor, self).__init__()
+
+        self.linear1 = nn.Linear(in_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+        
+        self.mean_linear = nn.Linear(hidden_dim, out_dim)
+        self.log_std_linear = nn.Linear(hidden_dim, out_dim)
+        
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        
+        self.apply(weights_init_)
+        
+        """ action rescaling """
+        if action_space is None:
+            self.register_buffer('action_scale', torch.tensor(1.0))
+            self.register_buffer('action_bias', torch.tensor(0.0))
+        else:
+            action_scale = (action_space.high - action_space.low) / 2.0
+            action_bias = (action_space.high + action_space.low) / 2.0
+            self.register_buffer('action_scale', torch.FloatTensor(action_scale))
+            self.register_buffer('action_bias', torch.FloatTensor(action_bias))
 
     def forward(self, x):
-        return self.net(x)
+        x = F.relu(self.linear1(x))
+        x = F.relu(self.linear2(x))
+        mean = self.mean_linear(x)
+        log_std = self.log_std_linear(x)
+        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
+        return mean, log_std    # 리샘플링 없이 깔끔하게 mean, log_std만 반환
+
+class ValueNetwork(nn.Module):
+    def __init__(self, in_dim, hidden_dim=64) -> None:
+        super(ValueNetwork, self).__init__()
+        
+        self.linear1 = nn.Linear(in_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+        self.linear3 = nn.Linear(hidden_dim, 1)
+        
+        self.apply(weights_init_)
+        
+    def forward(self, state):
+        x = F.relu(self.linear1(state))
+        x = F.relu(self.linear2(x))
+        x = self.linear3(x)
+        return x
